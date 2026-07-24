@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Download, Thermometer, Droplets, Beaker, Activity, Calendar, Play, Square } from 'lucide-react';
+import { Download, Thermometer, Droplets, Beaker, Activity, Calendar, Play, Square, Trash2, X, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
@@ -11,17 +11,28 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
 
+  // State khusus untuk fitur Hapus Data
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteType, setDeleteType] = useState('date'); // Pilihan: 'date' atau 'all'
+  const [deleteDate, setDeleteDate] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Memisahkan fungsi fetch agar bisa dipanggil ulang setelah menghapus data
+  const fetchSensorData = async () => {
+    const { data: sensorData } = await supabase
+      .from('sensor_readings')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .limit(500);
+
+    if (sensorData) setData(sensorData);
+  };
+
   // 1. Mengambil data suhu & status tombol dari Supabase
   useEffect(() => {
-    const fetchData = async () => {
-      const { data: sensorData } = await supabase
-        .from('sensor_readings')
-        .select('*')
-        .order('created_at', { ascending: true })
-        .limit(500);
+    fetchSensorData();
 
-      if (sensorData) setData(sensorData);
-
+    const fetchStatus = async () => {
       const { data: statusData } = await supabase
         .from('kontrol_alat')
         .select('is_recording')
@@ -30,8 +41,7 @@ export default function App() {
         
       if (statusData) setIsRecording(statusData.is_recording);
     };
-
-    fetchData();
+    fetchStatus();
 
     const subscription = supabase
       .channel('sensor_readings_channel')
@@ -45,7 +55,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Logika Detak Jantung (Disesuaikan untuk interval 1 Menit)
+  // 2. Logika Detak Jantung
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (data.length === 0) {
@@ -56,8 +66,6 @@ export default function App() {
       const latestRecordTime = new Date(data[data.length - 1].created_at).getTime();
       const currentTime = new Date().getTime();
       
-      // Karena ESP32 mengirim tiap 1 menit (60.000 ms),
-      // Jika > 2.5 menit (150.000 ms) tidak ada data baru, anggap ESP32 Offline/Mati
       if (isRecording) {
         setIsOnline((currentTime - latestRecordTime) < 150000);
       } else {
@@ -97,7 +105,56 @@ export default function App() {
       .eq('id', 1);
   };
 
-  // 5. Fungsi Export ke Excel
+  // 5. Fungsi Eksekusi Hapus Data ke Supabase
+  const executeDelete = async () => {
+    if (deleteType === 'date' && !deleteDate) {
+      alert("Silakan pilih tanggal yang ingin dihapus terlebih dahulu!");
+      return;
+    }
+
+    const confirmMsg = deleteType === 'all' 
+      ? "PERINGATAN KERAS: Apakah Anda YAKIN ingin menghapus SEMUA data secara permanen? Tindakan ini tidak dapat dibatalkan!" 
+      : `Apakah Anda yakin ingin menghapus semua data pada tanggal ${deleteDate}?`;
+      
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsDeleting(true);
+    try {
+      if (deleteType === 'all') {
+        // Hapus SEMUA data
+        const { error } = await supabase
+          .from('sensor_readings')
+          .delete()
+          .not('id', 'is', null); // Syarat mutlak Supabase untuk menghapus semua baris
+          
+        if (error) throw error;
+      } else {
+        // Hapus berdasarkan TANGGAL (dari 00:00:00 sampai 23:59:59 di hari tersebut)
+        const startOfDay = new Date(`${deleteDate}T00:00:00`).toISOString();
+        const endOfDay = new Date(`${deleteDate}T23:59:59.999`).toISOString();
+        
+        const { error } = await supabase
+          .from('sensor_readings')
+          .delete()
+          .gte('created_at', startOfDay)
+          .lte('created_at', endOfDay);
+          
+        if (error) throw error;
+      }
+
+      alert("Data berhasil dihapus dari database!");
+      setIsDeleteModalOpen(false); // Tutup modal
+      setDeleteDate(""); // Reset input tanggal
+      fetchSensorData(); // Ambil ulang data dari Supabase (agar grafik kosong)
+      
+    } catch (error) {
+      alert("Gagal menghapus data: Pastikan Policy Supabase (RLS) mengizinkan aksi DELETE. Pesan error: " + error.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // 6. Fungsi Export ke Excel
   const exportToExcel = () => {
     if (filteredData.length === 0) {
       alert("Tidak ada data untuk diekspor pada tanggal ini.");
@@ -129,10 +186,79 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100 p-4 sm:p-8 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+      
+      {/* --- MODAL HAPUS DATA --- */}
+      {isDeleteModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-md shadow-2xl transform transition-all">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <Trash2 className="text-red-500" /> Hapus Data Sensor
+              </h3>
+              <button onClick={() => setIsDeleteModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-4 mb-6">
+              <div 
+                className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${deleteType === 'date' ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-300'}`}
+                onClick={() => setDeleteType('date')}
+              >
+                <label className="flex items-center gap-3 cursor-pointer font-bold text-slate-700">
+                  <input type="radio" checked={deleteType === 'date'} readOnly className="w-4 h-4 text-indigo-600" />
+                  Hapus Berdasarkan Tanggal
+                </label>
+                {deleteType === 'date' && (
+                  <div className="mt-3 ml-7">
+                    <input 
+                      type="date" 
+                      value={deleteDate}
+                      onChange={(e) => setDeleteDate(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div 
+                className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${deleteType === 'all' ? 'border-red-500 bg-red-50' : 'border-slate-200 hover:border-slate-300'}`}
+                onClick={() => setDeleteType('all')}
+              >
+                <label className="flex items-center gap-3 cursor-pointer font-bold text-red-600">
+                  <input type="radio" checked={deleteType === 'all'} readOnly className="w-4 h-4 text-red-600" />
+                  Hapus SEMUA Data (Reset)
+                </label>
+                {deleteType === 'all' && (
+                  <p className="mt-2 ml-7 text-xs text-red-500 flex items-start gap-1">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    Tindakan ini akan mengosongkan tabel grafik secara permanen.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button onClick={() => setIsDeleteModalOpen(false)} className="flex-1 px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-colors">
+                Batal
+              </button>
+              <button 
+                onClick={executeDelete} 
+                disabled={isDeleting}
+                className="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-colors disabled:opacity-50 flex justify-center items-center gap-2"
+              >
+                {isDeleting ? 'Menghapus...' : 'Konfirmasi Hapus'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* --- AKHIR MODAL --- */}
+
       <div className="max-w-7xl mx-auto space-y-8">
         
         {/* Header Section & Filter */}
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center bg-white/70 backdrop-blur-xl p-6 md:p-8 rounded-3xl shadow-sm border border-white/80 gap-6">
+        <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center bg-white/70 backdrop-blur-xl p-6 md:p-8 rounded-3xl shadow-sm border border-white/80 gap-6">
           <div className="flex items-center gap-4">
             <div className="p-3 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-2xl shadow-lg shadow-indigo-200">
               <Activity size={28} />
@@ -143,22 +269,22 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex flex-col sm:flex-row w-full lg:w-auto items-stretch sm:items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
             
             <button 
               onClick={toggleRecording}
-              className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold transition-all duration-200 shadow-md whitespace-nowrap text-white ${
+              className={`flex-1 sm:flex-none items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold transition-all duration-200 shadow-md flex text-white ${
                 isRecording 
-                  ? 'bg-red-500 hover:bg-red-600 hover:shadow-red-200 shadow-red-200' 
-                  : 'bg-emerald-500 hover:bg-emerald-600 hover:shadow-emerald-200 shadow-emerald-200'
+                  ? 'bg-red-500 hover:bg-red-600 shadow-red-200' 
+                  : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-200'
               }`}
             >
-              {isRecording ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-              {isRecording ? 'Berhenti Merekam' : 'Mulai Merekam'}
+              {isRecording ? <Square size={18} /> : <Play size={18} />}
+              <span className="hidden sm:inline">{isRecording ? 'Berhenti Merekam' : 'Mulai Merekam'}</span>
             </button>
 
-            <div className="flex items-center bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
-              <Calendar size={18} className="text-slate-400 mr-2" />
+            <div className="flex-1 sm:flex-none flex items-center bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
+              <Calendar size={18} className="text-slate-400 mr-2 shrink-0" />
               <input 
                 type="date" 
                 value={filterDate}
@@ -166,17 +292,28 @@ export default function App() {
                 className="bg-transparent border-none outline-none text-slate-600 font-medium text-sm w-full cursor-pointer"
               />
               {filterDate && (
-                <button onClick={() => setFilterDate("")} className="ml-2 text-xs text-red-500 hover:text-red-700 font-semibold">Batal</button>
+                <button onClick={() => setFilterDate("")} className="ml-2 text-xs text-red-500 hover:text-red-700 font-bold shrink-0">Batal</button>
               )}
             </div>
 
-            <button 
-              onClick={exportToExcel}
-              className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 active:scale-95 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-200 shadow-md hover:shadow-xl hover:shadow-slate-200 whitespace-nowrap"
-            >
-              <Download size={18} />
-              Export Data
-            </button>
+            <div className="flex gap-3 w-full sm:w-auto">
+              <button 
+                onClick={exportToExcel}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 active:scale-95 text-white px-5 py-3 rounded-xl font-semibold transition-all duration-200 shadow-md hover:shadow-xl"
+              >
+                <Download size={18} />
+                <span className="hidden sm:inline">Export</span>
+              </button>
+
+              <button 
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 active:scale-95 text-red-600 px-5 py-3 rounded-xl font-semibold transition-all duration-200 border border-red-200"
+              >
+                <Trash2 size={18} />
+                <span className="hidden sm:inline">Hapus Data</span>
+              </button>
+            </div>
+
           </div>
         </div>
 
@@ -233,7 +370,7 @@ export default function App() {
 
         {/* Grafik Sejarah Suhu */}
         <div className="bg-white p-6 md:p-8 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
             <div>
               <h3 className="text-xl font-bold text-slate-800">Tren Suhu Fermentasi</h3>
               <p className="text-slate-500 text-sm mt-1">
@@ -278,7 +415,7 @@ export default function App() {
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-full flex items-center justify-center text-slate-400">Tidak ada data untuk tanggal yang dipilih.</div>
+              <div className="h-full flex items-center justify-center text-slate-400">Tidak ada data untuk ditampilkan.</div>
             )}
           </div>
         </div>

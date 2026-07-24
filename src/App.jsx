@@ -10,14 +10,14 @@ export default function App() {
   const [filterDate, setFilterDate] = useState("");
   const [isOnline, setIsOnline] = useState(false);
 
-  // 1. Mengambil data dari Supabase
+  // 1. Mengambil data dari Supabase (Realtime)
   useEffect(() => {
     const fetchData = async () => {
       const { data: sensorData, error } = await supabase
         .from('sensor_readings')
         .select('*')
         .order('created_at', { ascending: true })
-        .limit(500); // Ditingkatkan menjadi 500 data agar riwayat tabel lebih panjang
+        .limit(500);
 
       if (!error && sensorData) {
         setData(sensorData);
@@ -26,6 +26,7 @@ export default function App() {
 
     fetchData();
 
+    // Supabase Realtime Listener (Memicu update layar secara instan)
     const subscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
@@ -38,25 +39,26 @@ export default function App() {
     };
   }, []);
 
-  // 2. Logika Detak Jantung (Online/Offline Status)
+  // 2. Logika Detak Jantung Cepat (Online/Offline Status)
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (data.length === 0) {
         setIsOnline(false);
         return;
       }
-      // Ambil waktu dari data terakhir yang masuk
+      
       const latestRecordTime = new Date(data[data.length - 1].created_at).getTime();
       const currentTime = new Date().getTime();
       
-      // Karena ESP32 mengirim tiap 1 menit (60.000 ms), 
-      // Jika > 2.5 menit (150.000 ms) tidak ada data baru, anggap ESP32 Offline/Mati
-      const isAlive = (currentTime - latestRecordTime) < 150000;
+      // Karena ESP32 mengirim tiap 10 detik, 
+      // Jika > 30 detik (30.000 ms) tidak ada data baru, anggap ESP32 Offline/Mati
+      const isAlive = (currentTime - latestRecordTime) < 30000;
       setIsOnline(isAlive);
     };
 
-    checkOnlineStatus(); // Cek saat data berubah
-    const interval = setInterval(checkOnlineStatus, 10000); // Cek ulang setiap 10 detik
+    checkOnlineStatus();
+    // Mengecek status alat setiap 5 detik agar indikator di layar sangat responsif
+    const interval = setInterval(checkOnlineStatus, 5000); 
 
     return () => clearInterval(interval);
   }, [data]);
@@ -64,10 +66,9 @@ export default function App() {
   // 3. Logika Filter Tanggal
   useEffect(() => {
     if (!filterDate) {
-      setFilteredData(data); // Jika tidak ada filter, tampilkan semua
+      setFilteredData(data);
     } else {
       const filtered = data.filter(item => {
-        // Konversi created_at ke format YYYY-MM-DD sesuai dengan zona waktu lokal
         const itemDate = new Date(item.created_at);
         const offset = itemDate.getTimezoneOffset();
         const localDate = new Date(itemDate.getTime() - (offset * 60 * 1000)).toISOString().split('T')[0];
@@ -77,13 +78,12 @@ export default function App() {
     }
   }, [data, filterDate]);
 
-  // 4. Fungsi untuk Export ke Excel (Hanya data yang difilter)
+  // 4. Fungsi Export ke Excel
   const exportToExcel = () => {
     if (filteredData.length === 0) {
       alert("Tidak ada data untuk diekspor pada tanggal ini.");
       return;
     }
-    // Format data agar lebih rapi di Excel
     const dataToExport = filteredData.map(item => ({
       "Waktu Tersimpan": new Date(item.created_at).toLocaleString(),
       "Suhu Krim (°C)": item.cream_temp,
@@ -99,10 +99,8 @@ export default function App() {
     XLSX.writeFile(workbook, fileName);
   };
 
-  // Mengambil data terbaru untuk kartu indikator
   const latestData = data.length > 0 ? data[data.length - 1] : { cream_temp: 0, oil_temp: 0, water_temp: 0 };
 
-  // Komponen Reusable untuk Status Badge
   const StatusBadge = () => (
     <span className={`px-3 py-1 text-xs font-bold rounded-full flex items-center gap-2 transition-colors duration-300 ${isOnline ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
       <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
@@ -152,7 +150,6 @@ export default function App() {
 
         {/* Kartu Indikator Suhu Saat Ini */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Card 1: Krim */}
           <div className="group bg-white p-6 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60 hover:-translate-y-1 transition-all duration-300">
             <div className="flex justify-between items-start mb-4">
               <div className="p-4 bg-gradient-to-br from-indigo-50 to-blue-50 text-indigo-600 rounded-2xl">
@@ -169,7 +166,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Card 2: Minyak */}
           <div className="group bg-white p-6 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60 hover:-translate-y-1 transition-all duration-300">
             <div className="flex justify-between items-start mb-4">
               <div className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 text-amber-500 rounded-2xl">
@@ -186,7 +182,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Card 3: Air */}
           <div className="group bg-white p-6 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60 hover:-translate-y-1 transition-all duration-300">
             <div className="flex justify-between items-start mb-4">
               <div className="p-4 bg-gradient-to-br from-cyan-50 to-sky-50 text-cyan-500 rounded-2xl">
@@ -270,7 +265,6 @@ export default function App() {
               </thead>
               <tbody>
                 {filteredData.length > 0 ? (
-                  // Map dari belakang (reverse) agar data terbaru ada di paling atas tabel
                   [...filteredData].reverse().map((item, index) => (
                     <tr key={item.id || index} className="bg-white border-b border-slate-100 hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 font-medium text-slate-900 whitespace-nowrap">

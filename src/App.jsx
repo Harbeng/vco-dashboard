@@ -9,7 +9,7 @@ export default function App() {
   const [filteredData, setFilteredData] = useState([]);
   const [filterDate, setFilterDate] = useState("");
   const [isOnline, setIsOnline] = useState(false);
-  const [isRecording, setIsRecording] = useState(false); // State untuk tombol Rekam
+  const [isRecording, setIsRecording] = useState(false);
 
   // 1. Mengambil data suhu & status tombol dari Supabase
   useEffect(() => {
@@ -22,7 +22,6 @@ export default function App() {
 
       if (sensorData) setData(sensorData);
 
-      // Mengambil status tombol rekam saat web pertama kali dibuka
       const { data: statusData } = await supabase
         .from('kontrol_alat')
         .select('is_recording')
@@ -34,7 +33,6 @@ export default function App() {
 
     fetchData();
 
-    // Supabase Realtime Listener untuk tabel sensor
     const subscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
@@ -47,7 +45,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Logika Detak Jantung
+  // 2. Logika Detak Jantung (Disesuaikan untuk interval 1 Menit)
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (data.length === 0) {
@@ -58,10 +56,10 @@ export default function App() {
       const latestRecordTime = new Date(data[data.length - 1].created_at).getTime();
       const currentTime = new Date().getTime();
       
-      // Jika alat sedang merekam dan data macet > 30 detik = Offline
-      // Jika alat sedang tidak merekam (Standby), kita anggap Online selama alat nyala (meski tidak kirim data)
+      // Karena ESP32 mengirim tiap 1 menit (60.000 ms),
+      // Jika > 2.5 menit (150.000 ms) tidak ada data baru, anggap ESP32 Offline/Mati
       if (isRecording) {
-        setIsOnline((currentTime - latestRecordTime) < 30000);
+        setIsOnline((currentTime - latestRecordTime) < 150000);
       } else {
         setIsOnline(true); 
       }
@@ -91,9 +89,8 @@ export default function App() {
   // 4. Fungsi Mengubah Status Merekam di Database
   const toggleRecording = async () => {
     const newStatus = !isRecording;
-    setIsRecording(newStatus); // Update di layar seketika
+    setIsRecording(newStatus); 
     
-    // Kirim perintah perubahan ke database Supabase
     await supabase
       .from('kontrol_alat')
       .update({ is_recording: newStatus })
@@ -148,7 +145,6 @@ export default function App() {
           
           <div className="flex flex-col sm:flex-row w-full lg:w-auto items-stretch sm:items-center gap-4">
             
-            {/* TOMBOL REKAM BARU */}
             <button 
               onClick={toggleRecording}
               className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold transition-all duration-200 shadow-md whitespace-nowrap text-white ${
@@ -244,7 +240,6 @@ export default function App() {
                 Menampilkan {filteredData.length} data {filterDate ? `pada tanggal ${filterDate}` : 'terakhir'}
               </p>
             </div>
-            {/* Indikator Status di Atas Grafik */}
             <div className={`px-4 py-2 rounded-lg font-bold text-sm ${isRecording ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-500'}`}>
               {isRecording ? '🔴 SEDANG MEREKAM...' : '⏸️ MODE STANDBY'}
             </div>
@@ -292,7 +287,7 @@ export default function App() {
         <div className="bg-white p-6 md:p-8 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60 overflow-hidden">
           <div className="mb-6">
             <h3 className="text-xl font-bold text-slate-800">Tabel Riwayat Data</h3>
-            <p className="text-slate-500 text-sm mt-1">Detail pencatatan suhu per 10 detik</p>
+            <p className="text-slate-500 text-sm mt-1">Detail pencatatan suhu per 1 menit</p>
           </div>
 
           <div className="overflow-x-auto h-[400px] overflow-y-auto rounded-xl border border-slate-200">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Download, Thermometer, Droplets, Beaker, Activity, Calendar } from 'lucide-react';
+import { Download, Thermometer, Droplets, Beaker, Activity, Calendar, Play, Square } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
@@ -9,24 +9,32 @@ export default function App() {
   const [filteredData, setFilteredData] = useState([]);
   const [filterDate, setFilterDate] = useState("");
   const [isOnline, setIsOnline] = useState(false);
+  const [isRecording, setIsRecording] = useState(false); // State untuk tombol Rekam
 
-  // 1. Mengambil data dari Supabase (Realtime)
+  // 1. Mengambil data suhu & status tombol dari Supabase
   useEffect(() => {
     const fetchData = async () => {
-      const { data: sensorData, error } = await supabase
+      const { data: sensorData } = await supabase
         .from('sensor_readings')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(500);
 
-      if (!error && sensorData) {
-        setData(sensorData);
-      }
+      if (sensorData) setData(sensorData);
+
+      // Mengambil status tombol rekam saat web pertama kali dibuka
+      const { data: statusData } = await supabase
+        .from('kontrol_alat')
+        .select('is_recording')
+        .eq('id', 1)
+        .single();
+        
+      if (statusData) setIsRecording(statusData.is_recording);
     };
 
     fetchData();
 
-    // Supabase Realtime Listener (Memicu update layar secara instan)
+    // Supabase Realtime Listener untuk tabel sensor
     const subscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
@@ -39,7 +47,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Logika Detak Jantung Cepat (Online/Offline Status)
+  // 2. Logika Detak Jantung
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (data.length === 0) {
@@ -50,18 +58,20 @@ export default function App() {
       const latestRecordTime = new Date(data[data.length - 1].created_at).getTime();
       const currentTime = new Date().getTime();
       
-      // Karena ESP32 mengirim tiap 10 detik, 
-      // Jika > 30 detik (30.000 ms) tidak ada data baru, anggap ESP32 Offline/Mati
-      const isAlive = (currentTime - latestRecordTime) < 30000;
-      setIsOnline(isAlive);
+      // Jika alat sedang merekam dan data macet > 30 detik = Offline
+      // Jika alat sedang tidak merekam (Standby), kita anggap Online selama alat nyala (meski tidak kirim data)
+      if (isRecording) {
+        setIsOnline((currentTime - latestRecordTime) < 30000);
+      } else {
+        setIsOnline(true); 
+      }
     };
 
     checkOnlineStatus();
-    // Mengecek status alat setiap 5 detik agar indikator di layar sangat responsif
     const interval = setInterval(checkOnlineStatus, 5000); 
 
     return () => clearInterval(interval);
-  }, [data]);
+  }, [data, isRecording]);
 
   // 3. Logika Filter Tanggal
   useEffect(() => {
@@ -78,7 +88,19 @@ export default function App() {
     }
   }, [data, filterDate]);
 
-  // 4. Fungsi Export ke Excel
+  // 4. Fungsi Mengubah Status Merekam di Database
+  const toggleRecording = async () => {
+    const newStatus = !isRecording;
+    setIsRecording(newStatus); // Update di layar seketika
+    
+    // Kirim perintah perubahan ke database Supabase
+    await supabase
+      .from('kontrol_alat')
+      .update({ is_recording: newStatus })
+      .eq('id', 1);
+  };
+
+  // 5. Fungsi Export ke Excel
   const exportToExcel = () => {
     if (filteredData.length === 0) {
       alert("Tidak ada data untuk diekspor pada tanggal ini.");
@@ -125,6 +147,20 @@ export default function App() {
           </div>
           
           <div className="flex flex-col sm:flex-row w-full lg:w-auto items-stretch sm:items-center gap-4">
+            
+            {/* TOMBOL REKAM BARU */}
+            <button 
+              onClick={toggleRecording}
+              className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold transition-all duration-200 shadow-md whitespace-nowrap text-white ${
+                isRecording 
+                  ? 'bg-red-500 hover:bg-red-600 hover:shadow-red-200 shadow-red-200' 
+                  : 'bg-emerald-500 hover:bg-emerald-600 hover:shadow-emerald-200 shadow-emerald-200'
+              }`}
+            >
+              {isRecording ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+              {isRecording ? 'Berhenti Merekam' : 'Mulai Merekam'}
+            </button>
+
             <div className="flex items-center bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
               <Calendar size={18} className="text-slate-400 mr-2" />
               <input 
@@ -201,11 +237,17 @@ export default function App() {
 
         {/* Grafik Sejarah Suhu */}
         <div className="bg-white p-6 md:p-8 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60">
-          <div className="mb-6">
-            <h3 className="text-xl font-bold text-slate-800">Tren Suhu Fermentasi</h3>
-            <p className="text-slate-500 text-sm mt-1">
-              Menampilkan {filteredData.length} data {filterDate ? `pada tanggal ${filterDate}` : 'terakhir'}
-            </p>
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h3 className="text-xl font-bold text-slate-800">Tren Suhu Fermentasi</h3>
+              <p className="text-slate-500 text-sm mt-1">
+                Menampilkan {filteredData.length} data {filterDate ? `pada tanggal ${filterDate}` : 'terakhir'}
+              </p>
+            </div>
+            {/* Indikator Status di Atas Grafik */}
+            <div className={`px-4 py-2 rounded-lg font-bold text-sm ${isRecording ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-500'}`}>
+              {isRecording ? '🔴 SEDANG MEREKAM...' : '⏸️ MODE STANDBY'}
+            </div>
           </div>
           
           <div className="h-[400px] w-full">
@@ -250,7 +292,7 @@ export default function App() {
         <div className="bg-white p-6 md:p-8 rounded-3xl shadow-md shadow-slate-100 border border-slate-100/60 overflow-hidden">
           <div className="mb-6">
             <h3 className="text-xl font-bold text-slate-800">Tabel Riwayat Data</h3>
-            <p className="text-slate-500 text-sm mt-1">Detail pencatatan suhu per menit</p>
+            <p className="text-slate-500 text-sm mt-1">Detail pencatatan suhu per 10 detik</p>
           </div>
 
           <div className="overflow-x-auto h-[400px] overflow-y-auto rounded-xl border border-slate-200">

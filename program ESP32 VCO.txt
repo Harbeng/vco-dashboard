@@ -3,109 +3,213 @@
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // ================= KONFIGURASI WIFI & SUPABASE =================
-const char* ssid = "GANTI_DENGAN_NAMA_WIFI_ANDA";
-const char* password = "GANTI_DENGAN_PASSWORD_WIFI_ANDA";
+const char* ssid = "admin";
+const char* password = "12345678";
 
-// Dapatkan dari Dashboard Supabase -> Project Settings -> API
-String supabase_url = "https://feqrbytxcdhmlaawyztk.supabase.co"; 
+String supabase_url = "https://feqrbytxcdhmlaawyztk.supabase.co/rest/v1/sensor_readings"; 
+String supabase_url_kontrol = "https://feqrbytxcdhmlaawyztk.supabase.co/rest/v1/kontrol_alat?id=eq.1&select=is_recording";
 String supabase_anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlcXJieXR4Y2RobWxhYXd5enRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MTE2MzAsImV4cCI6MjEwMDM4NzYzMH0.eGFohHTDoEHjtlGRemwHkS455hMJLBqCK51QCPdj58k";
 
-// ================= KONFIGURASI SENSOR & LCD =================
-const int ONE_WIRE_BUS = 4; // Pin D4 tempat ketiga sensor DS18B20 terhubung
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
+// ================= KONFIGURASI 3 SENSOR (PIN BERBEDA) =================
+const int PIN_KRIM = 4;
+const int PIN_MINYAK = 16;
+const int PIN_AIR = 17;
 
-// Alamat I2C LCD (Biasanya 0x27 atau 0x3F). Sesuaikan jika tidak muncul tulisan.
-LiquidCrystal_I2C lcd(0x27, 20, 4); 
+OneWire oneWireCream(PIN_KRIM);
+OneWire oneWireOil(PIN_MINYAK);
+OneWire oneWireWater(PIN_AIR);
 
-// Waktu tunggu pengiriman data (dalam milidetik). 
-// Jangan terlalu cepat (misal tiap detik) agar tidak membebani limit Supabase gratis.
-// 10000 = 10 detik, 60000 = 1 menit. Direkomendasikan 1 menit.
+DallasTemperature sensorCream(&oneWireCream);
+DallasTemperature sensorOil(&oneWireOil);
+DallasTemperature sensorWater(&oneWireWater);
+
+// ================= KONFIGURASI OLED =================
+#define SCREEN_WIDTH 128 
+#define SCREEN_HEIGHT 64 
+#define OLED_RESET    -1 
+#define SCREEN_ADDRESS 0x3C 
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 unsigned long previousMillis = 0;
 const long interval = 60000; 
 
-// Variabel untuk menyimpan suhu
 float tempCream, tempOil, tempWater;
+bool statusRekam = false; // Variabel penyimpan status tombol dari web
 
 void setup() {
   Serial.begin(115200);
 
-  // Inisialisasi LCD
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Memulai Sistem...");
-
-  // Inisialisasi Sensor
-  sensors.begin();
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("OLED gagal terhubung!"));
+    for(;;);
+  }
   
-  // Koneksi WiFi
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("Memulai Sistem VCO..."));
+  display.display();
+  delay(1000);
+
+  sensorCream.begin();
+  sensorOil.begin();
+  sensorWater.begin();
+  
   WiFi.begin(ssid, password);
-  lcd.setCursor(0, 1);
-  lcd.print("Konek WiFi: ");
-  Serial.print("Connecting to WiFi");
+  display.clearDisplay();
+  display.setCursor(0, 10);
+  display.println(F("Koneksi ke WiFi..."));
+  display.display();
+  
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi network");
-  lcd.print("OK");
-  delay(2000);
-  lcd.clear();
+  
+  display.clearDisplay();
+  display.setCursor(0, 10);
+  display.println(F("WiFi Terhubung!"));
+  display.display();
+  delay(1500);
+
+  previousMillis = millis() - interval; 
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  // Membaca suhu setiap iterasi loop (untuk tampilan LCD yang responsif)
-  sensors.requestTemperatures(); 
+  sensorCream.requestTemperatures();
+  sensorOil.requestTemperatures();
+  sensorWater.requestTemperatures();
   
-  // PERHATIAN: Urutan index sensor (0, 1, 2) bisa berbeda tergantung ID unik pabrik tiap sensor.
-  // Anda mungkin perlu menukar posisi fisik sensor setelah melihat hasil bacanya, 
-  // atau mencari ID unik (*address*) masing-masing sensor untuk menetapkan posisinya.
-  // Untuk saat ini kita asumsikan urutannya seperti ini:
-  tempCream = sensors.getTempCByIndex(0); 
-  tempOil = sensors.getTempCByIndex(1);
-  tempWater = sensors.getTempCByIndex(2);
+  tempCream = sensorCream.getTempCByIndex(0); 
+  tempOil = sensorOil.getTempCByIndex(0);
+  tempWater = sensorWater.getTempCByIndex(0);
 
-  // Tampilkan di LCD
-  tampilkanLCD();
+  tampilkanOLED();
 
-  // Kirim data ke Supabase sesuai interval waktu
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
     if (WiFi.status() == WL_CONNECTED) {
-      kirimDataKeSupabase();
+      // 1. Cek dulu apakah web menyuruh merekam?
+      cekStatusRekam();
+      
+      // 2. Jika disuruh merekam, baru kirim datanya
+      if (statusRekam == true) {
+        kirimDataKeSupabase();
+      }
     } else {
-      Serial.println("WiFi Disconnected");
-      lcd.setCursor(0, 3);
-      lcd.print("WiFi Terputus!    ");
+      display.fillRect(0, 0, 128, 10, SSD1306_BLACK);
+      display.setCursor(0, 0);
+      display.print(F("! WiFi TERPUTUS !"));
+      display.display();
     }
   }
 }
 
-void tampilkanLCD() {
-  lcd.setCursor(0, 0); lcd.print("SUHU FERMENTOR VCO");
-  lcd.setCursor(0, 1); lcd.print("Krim  : "); lcd.print(tempCream, 1); lcd.print(" C");
-  lcd.setCursor(0, 2); lcd.print("Minyak: "); lcd.print(tempOil, 1); lcd.print(" C");
-  lcd.setCursor(0, 3); lcd.print("Air   : "); lcd.print(tempWater, 1); lcd.print(" C");
+void tampilkanOLED() {
+  display.clearDisplay(); 
+
+  // --- HEADER ---
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("FERMENTOR VCO"));
+
+  // Menampilkan indikator REC atau STBY di pojok kanan atas layar OLED
+  display.setCursor(104, 0);
+  if (statusRekam) {
+    display.print(F("REC"));
+  } else {
+    display.print(F("STBY"));
+  }
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); 
+
+  // --- BARIS 1: KRIM ---
+  display.setTextSize(1);
+  display.setCursor(0, 19);  
+  display.print(F("KRIM   :"));
+  if (tempCream <= -100) {
+    display.setCursor(56, 19);
+    display.print(F("TDK TERBACA"));
+  } else {
+    display.setTextSize(2);
+    display.setCursor(56, 15); 
+    display.print(tempCream, 1);
+    display.setTextSize(1);
+    display.setCursor(110, 15);
+    display.print(F("\xF8" "C")); 
+  }
+
+  // --- BARIS 2: MINYAK ---
+  display.setTextSize(1);
+  display.setCursor(0, 37);
+  display.print(F("MINYAK :"));
+  if (tempOil <= -100) {
+    display.setCursor(56, 37);
+    display.print(F("TDK TERBACA"));
+  } else {
+    display.setTextSize(2);
+    display.setCursor(56, 33);
+    display.print(tempOil, 1);
+    display.setTextSize(1);
+    display.setCursor(110, 33);
+    display.print(F("\xF8" "C"));
+  }
+
+  // --- BARIS 3: AIR ---
+  display.setTextSize(1);
+  display.setCursor(0, 55);
+  display.print(F("AIR    :"));
+  if (tempWater <= -100) {
+    display.setCursor(56, 55);
+    display.print(F("TDK TERBACA"));
+  } else {
+    display.setTextSize(2);
+    display.setCursor(56, 51);
+    display.print(tempWater, 1);
+    display.setTextSize(1);
+    display.setCursor(110, 51);
+    display.print(F("\xF8" "C"));
+  }
+
+  display.display(); 
+}
+
+// FUNGSI BARU: Mengambil status tombol dari Database
+void cekStatusRekam() {
+  HTTPClient http;
+  http.begin(supabase_url_kontrol);
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization", "Bearer " + supabase_anon_key);
+  
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    String payload = http.getString();
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (!error) {
+      statusRekam = doc[0]["is_recording"];
+    }
+  }
+  http.end();
 }
 
 void kirimDataKeSupabase() {
   HTTPClient http;
-  
-  // Siapkan koneksi HTTP POST
   http.begin(supabase_url);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", supabase_anon_key);
   http.addHeader("Authorization", "Bearer " + supabase_anon_key);
-  http.addHeader("Prefer", "return=minimal"); // Agar respon lebih kecil
+  http.addHeader("Prefer", "return=minimal");
 
-  // Buat isi data JSON
   StaticJsonDocument<200> doc;
   doc["cream_temp"] = tempCream;
   doc["oil_temp"] = tempOil;
@@ -114,19 +218,16 @@ void kirimDataKeSupabase() {
   String jsonOutput;
   serializeJson(doc, jsonOutput);
 
-  Serial.println("Mengirim data: " + jsonOutput);
+  // Indikator Titik berkedip saat kirim data
+  display.fillRect(122, 12, 6, 6, SSD1306_WHITE); 
+  display.display();
 
-  // Kirim permintaan (POST request)
   int httpResponseCode = http.POST(jsonOutput);
 
   if (httpResponseCode > 0) {
-    Serial.print("Data terkirim. Kode Respon: ");
+    Serial.print("Data terkirim. Kode: ");
     Serial.println(httpResponseCode);
-  } else {
-    Serial.print("Gagal mengirim. Error: ");
-    Serial.println(http.errorToString(httpResponseCode).c_str());
   }
   
-  // Tutup koneksi
   http.end();
 }

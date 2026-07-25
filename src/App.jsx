@@ -27,7 +27,6 @@ export default function App() {
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
-    // Otomatis hilang setelah 3.5 detik
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
   };
 
@@ -58,8 +57,7 @@ export default function App() {
     return () => supabase.removeChannel(subscription);
   }, []);
 
-  // PERBAIKAN 1: Logika Detak Jantung Ketat (Realtime Murni)
-  // Status Offline akan otomatis muncul jika tidak ada data baru dalam 2.5 menit terakhir, apa pun kondisinya.
+  // Logika Detak Jantung Ketat (Realtime Murni)
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (data.length === 0) { 
@@ -99,7 +97,6 @@ export default function App() {
     await supabase.from('kontrol_alat').update({ is_recording: newStatus }).eq('id', 1);
   };
 
-  // PERBAIKAN 2 & 3: Eksekusi Hapus Data tanpa window.confirm dan filter Supabase yang aman
   const executeDelete = async () => {
     if (deleteType === 'date' && !deleteDate) { 
       showToast("Gagal: Pilih tanggal terlebih dahulu!", "error"); 
@@ -109,7 +106,6 @@ export default function App() {
     setIsDeleting(true);
     try {
       if (deleteType === 'all') {
-        // Trik aman Supabase: Menghapus dengan filter waktu yang pasti lebih besar dari tahun 2000
         const { error } = await supabase
           .from('sensor_readings')
           .delete()
@@ -128,7 +124,6 @@ export default function App() {
         if (error) throw error;
       }
       
-      // PERBAIKAN 4: Menggunakan Custom Toast untuk pemberitahuan sukses
       showToast("Data sensor berhasil dihapus!", "success");
       setIsDeleteModalOpen(false); 
       setDeleteDate(""); 
@@ -163,7 +158,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100 p-4 sm:p-8 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       
-      {/* Panggilan Komponen Toast Notification */}
       <ToastNotification 
         show={toast.show} 
         message={toast.message} 
@@ -171,7 +165,6 @@ export default function App() {
         onClose={() => setToast({ ...toast, show: false })} 
       />
 
-      {/* Panggilan Komponen Modal Hapus Data */}
       <DeleteModal 
         isOpen={isDeleteModalOpen} 
         onClose={() => setIsDeleteModalOpen(false)}
@@ -181,14 +174,26 @@ export default function App() {
       />
 
       <div className="max-w-7xl mx-auto space-y-8">
+        
+        {/* Header sekarang menjadi lebih bersih */}
         <Header 
-          isRecording={isRecording} toggleRecording={toggleRecording}
-          filterDate={filterDate} setFilterDate={setFilterDate}
-          exportToExcel={exportToExcel} openDeleteModal={() => setIsDeleteModalOpen(true)}
+          isRecording={isRecording} 
+          toggleRecording={toggleRecording}
         />
+        
         <IndicatorCards latestData={latestData} isOnline={isOnline} />
+        
         <TemperatureChart filteredData={filteredData} filterDate={filterDate} isRecording={isRecording} />
-        <HistoryTable filteredData={filteredData} />
+        
+        {/* Tombol filter, export, dan hapus ada di tabel ini */}
+        <HistoryTable 
+          filteredData={filteredData} 
+          filterDate={filterDate}
+          setFilterDate={setFilterDate}
+          exportToExcel={exportToExcel}
+          openDeleteModal={() => setIsDeleteModalOpen(true)}
+        />
+        
       </div>
     </div>
   );

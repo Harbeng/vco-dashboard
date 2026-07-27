@@ -13,16 +13,19 @@ export default function App() {
   const [data, setData] = useState([]);
   const [filteredData, setFilteredData] = useState([]);
   const [filterDate, setFilterDate] = useState("");
+  
   const [isOnline, setIsOnline] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  
+  // State baru untuk menampung data suhu Real-time (yang diupdate tiap 10 detik)
+  const [realtimeData, setRealtimeData] = useState({ cream_temp: 0, oil_temp: 0, water_temp: 0 });
+  const [lastSeen, setLastSeen] = useState(0); 
 
-  // Modal State
+  // Modal & Toast State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteType, setDeleteType] = useState('date'); 
   const [deleteDate, setDeleteDate] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
-
-  // Custom Toast Notification State
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
   const showToast = (message, type = 'success') => {
@@ -41,42 +44,62 @@ export default function App() {
 
   useEffect(() => {
     fetchSensorData();
-    const fetchStatus = async () => {
-      const { data: statusData } = await supabase.from('kontrol_alat').select('is_recording').eq('id', 1).single();
-      if (statusData) setIsRecording(statusData.is_recording);
+    
+    // Ambil status saklar sekaligus suhu real-time saat ini saat web baru dibuka
+    const fetchStatusAndRealtime = async () => {
+      const { data: statusData } = await supabase.from('kontrol_alat').select('*').eq('id', 1).single();
+      if (statusData) {
+        setIsRecording(statusData.is_recording);
+        setRealtimeData({
+          cream_temp: statusData.cream_temp || 0,
+          oil_temp: statusData.oil_temp || 0,
+          water_temp: statusData.water_temp || 0
+        });
+      }
     };
-    fetchStatus();
+    fetchStatusAndRealtime();
 
-    const subscription = supabase
+    // 1. Telinga Supabase untuk Tabel Riwayat Grafik (Hanya bunyi jika sedang Merekam)
+    const historySubscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
         setData((currentData) => [...currentData, payload.new].slice(-500));
       })
       .subscribe();
 
-    return () => supabase.removeChannel(subscription);
+    // 2. Telinga Supabase untuk Tabel Real-time (Selalu bunyi tiap 10 detik selama alat nyala)
+    const realtimeSubscription = supabase
+      .channel('kontrol_alat_channel')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kontrol_alat' }, (payload) => {
+        setIsRecording(payload.new.is_recording);
+        setRealtimeData({
+          cream_temp: payload.new.cream_temp,
+          oil_temp: payload.new.oil_temp,
+          water_temp: payload.new.water_temp
+        });
+        // Karena ada data masuk, berarti alat terbukti menyala! Catat waktunya.
+        setLastSeen(Date.now());
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(historySubscription);
+      supabase.removeChannel(realtimeSubscription);
+    };
   }, []);
 
-  // Logika Detak Jantung Ketat (Realtime Murni)
+  // LOGIKA ONLINE: Jika ada denyut data real-time dalam 15 detik terakhir, maka Online.
   useEffect(() => {
     const checkOnlineStatus = () => {
-      if (data.length === 0) { 
-        setIsOnline(false); 
-        return; 
-      }
-      const latestRecordTime = new Date(data[data.length - 1].created_at).getTime();
-      const currentTime = new Date().getTime();
-      
-      // Jika data terakhir dikirim kurang dari 150.000ms (2.5 menit) yang lalu, maka Online.
-      setIsOnline((currentTime - latestRecordTime) < 150000);
+      const isAlive = (Date.now() - lastSeen) < 15000;
+      setIsOnline(isAlive);
     };
     
     checkOnlineStatus();
     const interval = setInterval(checkOnlineStatus, 5000); 
     return () => clearInterval(interval);
-  }, [data]);
+  }, [lastSeen]);
 
-  // Logika Filter
   useEffect(() => {
     if (!filterDate) {
       setFilteredData(data);
@@ -102,28 +125,17 @@ export default function App() {
       showToast("Gagal: Pilih tanggal terlebih dahulu!", "error"); 
       return; 
     }
-
     setIsDeleting(true);
     try {
       if (deleteType === 'all') {
-        const { error } = await supabase
-          .from('sensor_readings')
-          .delete()
-          .gte('created_at', '2000-01-01');
-          
+        const { error } = await supabase.from('sensor_readings').delete().gte('created_at', '2000-01-01');
         if (error) throw error;
       } else {
         const startOfDay = new Date(`${deleteDate}T00:00:00.000Z`).toISOString();
         const endOfDay = new Date(`${deleteDate}T23:59:59.999Z`).toISOString();
-        const { error } = await supabase
-          .from('sensor_readings')
-          .delete()
-          .gte('created_at', startOfDay)
-          .lte('created_at', endOfDay);
-          
+        const { error } = await supabase.from('sensor_readings').delete().gte('created_at', startOfDay).lte('created_at', endOfDay);
         if (error) throw error;
       }
-      
       showToast("Data sensor berhasil dihapus!", "success");
       setIsDeleteModalOpen(false); 
       setDeleteDate(""); 
@@ -153,47 +165,28 @@ export default function App() {
     XLSX.writeFile(workbook, fileName);
   };
 
-  const latestData = data.length > 0 ? data[data.length - 1] : { cream_temp: 0, oil_temp: 0, water_temp: 0 };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100 p-4 sm:p-8 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       
-      <ToastNotification 
-        show={toast.show} 
-        message={toast.message} 
-        type={toast.type} 
-        onClose={() => setToast({ ...toast, show: false })} 
-      />
+      <ToastNotification show={toast.show} message={toast.message} type={toast.type} onClose={() => setToast({ ...toast, show: false })} />
 
       <DeleteModal 
-        isOpen={isDeleteModalOpen} 
-        onClose={() => setIsDeleteModalOpen(false)}
-        deleteType={deleteType} setDeleteType={setDeleteType}
-        deleteDate={deleteDate} setDeleteDate={setDeleteDate}
+        isOpen={isDeleteModalOpen} onClose={() => setIsDeleteModalOpen(false)}
+        deleteType={deleteType} setDeleteType={setDeleteType} deleteDate={deleteDate} setDeleteDate={setDeleteDate}
         isDeleting={isDeleting} executeDelete={executeDelete}
       />
 
       <div className="max-w-7xl mx-auto space-y-8">
+        <Header isRecording={isRecording} toggleRecording={toggleRecording} />
         
-        {/* Header sekarang menjadi lebih bersih */}
-        <Header 
-          isRecording={isRecording} 
-          toggleRecording={toggleRecording}
-        />
-        
-        <IndicatorCards latestData={latestData} isOnline={isOnline} />
+        {/* Sekarang IndicatorCards memakai realtimeData, bukan data dari riwayat tabel! */}
+        <IndicatorCards latestData={realtimeData} isOnline={isOnline} />
         
         <TemperatureChart filteredData={filteredData} filterDate={filterDate} isRecording={isRecording} />
-        
-        {/* Tombol filter, export, dan hapus ada di tabel ini */}
         <HistoryTable 
-          filteredData={filteredData} 
-          filterDate={filterDate}
-          setFilterDate={setFilterDate}
-          exportToExcel={exportToExcel}
-          openDeleteModal={() => setIsDeleteModalOpen(true)}
+          filteredData={filteredData} filterDate={filterDate} setFilterDate={setFilterDate}
+          exportToExcel={exportToExcel} openDeleteModal={() => setIsDeleteModalOpen(true)}
         />
-        
       </div>
     </div>
   );

@@ -71,9 +71,10 @@ export default function HistoryTable({
                   <td className="px-6 py-4 font-medium text-slate-900 whitespace-nowrap">
                     {new Date(item.created_at).toLocaleString()}
                   </td>
-                  <td className="px-6 py-4">{item.cream_temp}</td>
-                  <td className="px-6 py-4">{item.oil_temp}</td>
-                  <td className="px-6 py-4">{item.water_temp}</td>
+                  {/* Pembulatan 1 angka di belakang koma untuk tabel */}
+                  <td className="px-6 py-4">{Number(item.cream_temp).toFixed(1)}</td>
+                  <td className="px-6 py-4">{Number(item.oil_temp).toFixed(1)}</td>
+                  <td className="px-6 py-4">{Number(item.water_temp).toFixed(1)}</td>
                 </tr>
               ))
             ) : (

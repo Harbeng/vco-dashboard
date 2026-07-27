@@ -158,21 +158,31 @@ export default function App() {
     }
   };
 
-  const exportToExcel = () => {
-    if (filteredData.length === 0) { 
-      showToast("Tidak ada data untuk diekspor pada tanggal ini.", "error"); 
+    const exportToExcel = (displayedData) => {
+    // Gunakan data yang dilempar dari tabel (yang sudah dipotong limit),
+    // jika tombol ditekan saat error/kosong, gunakan filteredData sebagai cadangan
+    const dataToProcess = (Array.isArray(displayedData) && displayedData.length > 0) 
+      ? displayedData 
+      : filteredData;
+
+    if (dataToProcess.length === 0) { 
+      showToast("Tidak ada data untuk diekspor.", "error"); 
       return; 
     }
-    const dataToExport = filteredData.map(item => ({
+
+    const dataToExport = dataToProcess.map(item => ({
       "Waktu Tersimpan": new Date(item.created_at).toLocaleString(),
-      "Suhu Krim (°C)": item.cream_temp,
-      "Suhu Minyak (°C)": item.oil_temp,
-      "Suhu Air (°C)": item.water_temp
+      "Suhu Krim (°C)": Number(item.cream_temp).toFixed(1),
+      "Suhu Minyak (°C)": Number(item.oil_temp).toFixed(1),
+      "Suhu Air (°C)": Number(item.water_temp).toFixed(1)
     }));
+
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Data Sensor");
-    const fileName = filterDate ? `Laporan_${filterDate}.xlsx` : `Laporan_Semua.xlsx`;
+    
+    // Nama file disesuaikan dengan status filter
+    const fileName = filterDate ? `Laporan_${filterDate}.xlsx` : `Laporan_Data_Sensor.xlsx`;
     XLSX.writeFile(workbook, fileName);
   };
 

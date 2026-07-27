@@ -20,6 +20,7 @@ export default function App() {
   const [realtimeData, setRealtimeData] = useState({ cream_temp: 0, oil_temp: 0, water_temp: 0 });
   
   // Menggunakan useRef agar nilai lastSeen selalu akurat di dalam setInterval
+  // Angka 0 berarti belum ada sinyal sama sekali sejak web dibuka
   const lastSeenRef = useRef(0);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -54,8 +55,8 @@ export default function App() {
           oil_temp: statusData.oil_temp || 0,
           water_temp: statusData.water_temp || 0
         });
-        // Set detak jantung awal saat web dimuat
-        lastSeenRef.current = Date.now(); 
+        // BARIS PENYEBAB BUG "ONLINE PALSU" TELAH DIHAPUS DARI SINI
+        // Web tidak lagi menganggap data basi dari database sebagai tanda alat hidup.
       }
     };
     fetchStatusAndRealtime();
@@ -76,9 +77,11 @@ export default function App() {
           oil_temp: payload.new.oil_temp,
           water_temp: payload.new.water_temp
         });
-        // Perbarui waktu terakhir alat terlihat
+        
+        // DI SINILAH TEMPAT YANG BENAR:
+        // Waktu diperbarui HANYA JIKA ada data (denyut) yang benar-benar baru dikirim oleh ESP32
         lastSeenRef.current = Date.now();
-        setIsOnline(true); // Langsung set Online begitu ada data masuk
+        setIsOnline(true); 
       })
       .subscribe();
 
@@ -88,15 +91,20 @@ export default function App() {
     };
   }, []);
 
-  // PERBAIKAN: Mengecek status online secara berkala
+  // Mengecek status online secara berkala (Tiap 3 Detik)
   useEffect(() => {
     const checkOnlineStatus = () => {
+      // Cegah status online jika lastSeenRef masih 0 (belum ada sinyal real-time masuk sama sekali)
+      if (lastSeenRef.current === 0) {
+        setIsOnline(false);
+        return;
+      }
+      
       // Jika data terakhir diterima lebih dari 15 detik yang lalu, anggap Offline
       const isAlive = (Date.now() - lastSeenRef.current) < 15000;
       setIsOnline(isAlive);
     };
     
-    // Cek setiap 3 detik
     const interval = setInterval(checkOnlineStatus, 3000); 
     return () => clearInterval(interval);
   }, []);

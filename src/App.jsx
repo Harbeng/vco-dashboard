@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -17,11 +17,11 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   
-  // State baru untuk menampung data suhu Real-time (yang diupdate tiap 10 detik)
   const [realtimeData, setRealtimeData] = useState({ cream_temp: 0, oil_temp: 0, water_temp: 0 });
-  const [lastSeen, setLastSeen] = useState(0); 
+  
+  // Menggunakan useRef agar nilai lastSeen selalu akurat di dalam setInterval
+  const lastSeenRef = useRef(0);
 
-  // Modal & Toast State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteType, setDeleteType] = useState('date'); 
   const [deleteDate, setDeleteDate] = useState("");
@@ -45,7 +45,6 @@ export default function App() {
   useEffect(() => {
     fetchSensorData();
     
-    // Ambil status saklar sekaligus suhu real-time saat ini saat web baru dibuka
     const fetchStatusAndRealtime = async () => {
       const { data: statusData } = await supabase.from('kontrol_alat').select('*').eq('id', 1).single();
       if (statusData) {
@@ -55,11 +54,12 @@ export default function App() {
           oil_temp: statusData.oil_temp || 0,
           water_temp: statusData.water_temp || 0
         });
+        // Set detak jantung awal saat web dimuat
+        lastSeenRef.current = Date.now(); 
       }
     };
     fetchStatusAndRealtime();
 
-    // 1. Telinga Supabase untuk Tabel Riwayat Grafik (Hanya bunyi jika sedang Merekam)
     const historySubscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
@@ -67,7 +67,6 @@ export default function App() {
       })
       .subscribe();
 
-    // 2. Telinga Supabase untuk Tabel Real-time (Selalu bunyi tiap 10 detik selama alat nyala)
     const realtimeSubscription = supabase
       .channel('kontrol_alat_channel')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kontrol_alat' }, (payload) => {
@@ -77,8 +76,9 @@ export default function App() {
           oil_temp: payload.new.oil_temp,
           water_temp: payload.new.water_temp
         });
-        // Karena ada data masuk, berarti alat terbukti menyala! Catat waktunya.
-        setLastSeen(Date.now());
+        // Perbarui waktu terakhir alat terlihat
+        lastSeenRef.current = Date.now();
+        setIsOnline(true); // Langsung set Online begitu ada data masuk
       })
       .subscribe();
 
@@ -88,17 +88,18 @@ export default function App() {
     };
   }, []);
 
-  // LOGIKA ONLINE: Jika ada denyut data real-time dalam 15 detik terakhir, maka Online.
+  // PERBAIKAN: Mengecek status online secara berkala
   useEffect(() => {
     const checkOnlineStatus = () => {
-      const isAlive = (Date.now() - lastSeen) < 15000;
+      // Jika data terakhir diterima lebih dari 15 detik yang lalu, anggap Offline
+      const isAlive = (Date.now() - lastSeenRef.current) < 15000;
       setIsOnline(isAlive);
     };
     
-    checkOnlineStatus();
-    const interval = setInterval(checkOnlineStatus, 5000); 
+    // Cek setiap 3 detik
+    const interval = setInterval(checkOnlineStatus, 3000); 
     return () => clearInterval(interval);
-  }, [lastSeen]);
+  }, []);
 
   useEffect(() => {
     if (!filterDate) {
@@ -179,7 +180,6 @@ export default function App() {
       <div className="max-w-7xl mx-auto space-y-8">
         <Header isRecording={isRecording} toggleRecording={toggleRecording} />
         
-        {/* Sekarang IndicatorCards memakai realtimeData, bukan data dari riwayat tabel! */}
         <IndicatorCards latestData={realtimeData} isOnline={isOnline} />
         
         <TemperatureChart filteredData={filteredData} filterDate={filterDate} isRecording={isRecording} />

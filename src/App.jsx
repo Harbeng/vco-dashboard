@@ -20,7 +20,6 @@ export default function App() {
   const [realtimeData, setRealtimeData] = useState({ cream_temp: 0, oil_temp: 0, water_temp: 0 });
   
   // Menggunakan useRef agar nilai lastSeen selalu akurat di dalam setInterval
-  // Angka 0 berarti belum ada sinyal sama sekali sejak web dibuka
   const lastSeenRef = useRef(0);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -55,8 +54,11 @@ export default function App() {
           oil_temp: statusData.oil_temp || 0,
           water_temp: statusData.water_temp || 0
         });
-        // BARIS PENYEBAB BUG "ONLINE PALSU" TELAH DIHAPUS DARI SINI
-        // Web tidak lagi menganggap data basi dari database sebagai tanda alat hidup.
+        
+        // PENTING: Jika ada data awal, kita anggap online dulu (untuk menghindari delay tampilan).
+        // Nanti akan di-override oleh logika interval jika ternyata ESP32 sudah mati.
+        lastSeenRef.current = Date.now();
+        setIsOnline(true);
       }
     };
     fetchStatusAndRealtime();
@@ -71,6 +73,7 @@ export default function App() {
     const realtimeSubscription = supabase
       .channel('kontrol_alat_channel')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kontrol_alat' }, (payload) => {
+        // Data dari ESP32 masuk, sinkronisasi state Web dengan database!
         setIsRecording(payload.new.is_recording);
         setRealtimeData({
           cream_temp: payload.new.cream_temp,
@@ -78,8 +81,7 @@ export default function App() {
           water_temp: payload.new.water_temp
         });
         
-        // DI SINILAH TEMPAT YANG BENAR:
-        // Waktu diperbarui HANYA JIKA ada data (denyut) yang benar-benar baru dikirim oleh ESP32
+        // Alat Terbukti Hidup! (Ada perubahan dari ESP32)
         lastSeenRef.current = Date.now();
         setIsOnline(true); 
       })
@@ -91,16 +93,15 @@ export default function App() {
     };
   }, []);
 
-  // Mengecek status online secara berkala (Tiap 3 Detik)
+  // MESIN PENGAWAS ONLINE/OFFLINE: Mengecek detak jantung tiap 3 Detik
   useEffect(() => {
     const checkOnlineStatus = () => {
-      // Cegah status online jika lastSeenRef masih 0 (belum ada sinyal real-time masuk sama sekali)
       if (lastSeenRef.current === 0) {
         setIsOnline(false);
         return;
       }
-      
-      // Jika data terakhir diterima lebih dari 15 detik yang lalu, anggap Offline
+      // Kita beri toleransi 15 detik (15000ms). Karena ESP32 update tiap 3 detik,
+      // harusnya tidak akan pernah mencapai 15 detik selama alat menyala dan ada internet.
       const isAlive = (Date.now() - lastSeenRef.current) < 15000;
       setIsOnline(isAlive);
     };
@@ -123,6 +124,7 @@ export default function App() {
     }
   }, [data, filterDate]);
 
+  // AKSI TOMBOL HIJAU/MERAH
   const toggleRecording = async () => {
     const newStatus = !isRecording;
     setIsRecording(newStatus); 

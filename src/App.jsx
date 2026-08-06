@@ -19,7 +19,6 @@ export default function App() {
   
   const [realtimeData, setRealtimeData] = useState({ cream_temp: 0, oil_temp: 0, water_temp: 0 });
   
-  // Menggunakan useRef agar nilai lastSeen selalu akurat di dalam setInterval
   const lastSeenRef = useRef(0);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -33,12 +32,12 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
   };
 
+  // MENGAMBIL SELURUH DATA TANPA BATAS (UNLIMITED)
   const fetchSensorData = async () => {
     const { data: sensorData } = await supabase
       .from('sensor_readings')
       .select('*')
-      .order('created_at', { ascending: true })
-      .limit(500);
+      .order('created_at', { ascending: true }); // .limit() dihapus total
     if (sensorData) setData(sensorData);
   };
 
@@ -54,11 +53,7 @@ export default function App() {
           oil_temp: statusData.oil_temp || 0,
           water_temp: statusData.water_temp || 0
         });
-        
-        // PENTING: Jika ada data awal, kita anggap online dulu (untuk menghindari delay tampilan).
-        // Nanti akan di-override oleh logika interval jika ternyata ESP32 sudah mati.
-        lastSeenRef.current = Date.now();
-        setIsOnline(true);
+        // Kita tidak menset lastSeenRef di sini agar tidak terjadi "Online Palsu" saat di-refresh
       }
     };
     fetchStatusAndRealtime();
@@ -66,14 +61,14 @@ export default function App() {
     const historySubscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
-        setData((currentData) => [...currentData, payload.new].slice(-500));
+        // DATA BARU DITAMBAHKAN TANPA DIPOTONG (.slice dihapus total)
+        setData((currentData) => [...currentData, payload.new]);
       })
       .subscribe();
 
     const realtimeSubscription = supabase
       .channel('kontrol_alat_channel')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kontrol_alat' }, (payload) => {
-        // Data dari ESP32 masuk, sinkronisasi state Web dengan database!
         setIsRecording(payload.new.is_recording);
         setRealtimeData({
           cream_temp: payload.new.cream_temp,
@@ -81,7 +76,6 @@ export default function App() {
           water_temp: payload.new.water_temp
         });
         
-        // Alat Terbukti Hidup! (Ada perubahan dari ESP32)
         lastSeenRef.current = Date.now();
         setIsOnline(true); 
       })
@@ -100,8 +94,6 @@ export default function App() {
         setIsOnline(false);
         return;
       }
-      // Kita beri toleransi 15 detik (15000ms). Karena ESP32 update tiap 3 detik,
-      // harusnya tidak akan pernah mencapai 15 detik selama alat menyala dan ada internet.
       const isAlive = (Date.now() - lastSeenRef.current) < 15000;
       setIsOnline(isAlive);
     };
@@ -158,9 +150,7 @@ export default function App() {
     }
   };
 
-    const exportToExcel = (displayedData) => {
-    // Gunakan data yang dilempar dari tabel (yang sudah dipotong limit),
-    // jika tombol ditekan saat error/kosong, gunakan filteredData sebagai cadangan
+  const exportToExcel = (displayedData) => {
     const dataToProcess = (Array.isArray(displayedData) && displayedData.length > 0) 
       ? displayedData 
       : filteredData;
@@ -181,7 +171,6 @@ export default function App() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Data Sensor");
     
-    // Nama file disesuaikan dengan status filter
     const fileName = filterDate ? `Laporan_${filterDate}.xlsx` : `Laporan_Data_Sensor.xlsx`;
     XLSX.writeFile(workbook, fileName);
   };

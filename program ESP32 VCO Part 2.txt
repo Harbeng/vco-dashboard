@@ -1,0 +1,260 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ================= KONFIGURASI WIFI & SUPABASE =================
+const char* ssid = "admin";
+const char* password = "12345678";
+
+String supabase_url_history = "https://feqrbytxcdhmlaawyztk.supabase.co/rest/v1/sensor_readings"; 
+String supabase_url_kontrol = "https://feqrbytxcdhmlaawyztk.supabase.co/rest/v1/kontrol_alat?id=eq.1";
+String supabase_anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlcXJieXR4Y2RobWxhYXd5enRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MTE2MzAsImV4cCI6MjEwMDM4NzYzMH0.eGFohHTDoEHjtlGRemwHkS455hMJLBqCK51QCPdj58k";
+
+// ================= KONFIGURASI 3 SENSOR =================
+const int PIN_KRIM = 4;
+const int PIN_MINYAK = 16;
+const int PIN_AIR = 17;
+
+OneWire oneWireCream(PIN_KRIM);
+OneWire oneWireOil(PIN_MINYAK);
+OneWire oneWireWater(PIN_AIR);
+
+DallasTemperature sensorCream(&oneWireCream);
+DallasTemperature sensorOil(&oneWireOil);
+DallasTemperature sensorWater(&oneWireWater);
+
+// ================= KONFIGURASI OLED =================
+#define SCREEN_WIDTH 128 
+#define SCREEN_HEIGHT 64 
+#define OLED_RESET    -1 
+#define SCREEN_ADDRESS 0x3C 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// ================= MESIN WAKTU (3 JALUR TERPISAH) =================
+unsigned long previousSensorMillis = 0;
+const long sensorInterval = 2000; // Baca Suhu tiap 2 detik
+
+unsigned long previousRealtimeMillis = 0;
+const long realtimeInterval = 3000; // Jalur Detak Jantung ke Web tiap 3 detik
+
+unsigned long previousHistoryMillis = 0;
+const long historyInterval = 60000;  // Simpan Riwayat tiap 60 detik
+
+float tempCream, tempOil, tempWater;
+bool statusRekam = false; // Default Standby
+
+void setup() {
+  Serial.begin(115200);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("OLED gagal terhubung!"));
+    for(;;);
+  }
+  
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("Memulai Sistem VCO..."));
+  display.display();
+  delay(1000);
+
+  // Inisialisasi Sensor
+  sensorCream.begin();
+  sensorOil.begin();
+  sensorWater.begin();
+
+  // PERBAIKAN FATAL: Mematikan mode "Menunggu" pada sensor agar ESP32 tidak hang 2 detik!
+  sensorCream.setWaitForConversion(false);
+  sensorOil.setWaitForConversion(false);
+  sensorWater.setWaitForConversion(false);
+  
+  // Memicu pembacaan suhu pertama kali
+  sensorCream.requestTemperatures();
+  sensorOil.requestTemperatures();
+  sensorWater.requestTemperatures();
+  
+  WiFi.begin(ssid, password);
+  display.clearDisplay();
+  display.setCursor(0, 10);
+  display.println(F("Koneksi ke WiFi..."));
+  display.display();
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  display.clearDisplay();
+  display.setCursor(0, 10);
+  display.println(F("WiFi Terhubung!"));
+  display.display();
+  delay(1500);
+
+  // Memaksa mesin waktu langsung jalan
+  previousSensorMillis = millis() - sensorInterval;
+  previousRealtimeMillis = millis() - realtimeInterval; 
+  previousHistoryMillis = millis() - historyInterval; 
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // -------------------------------------------------------------
+  // JALUR 1: BACA SENSOR & OLED (TIAP 2 DETIK) Cepat & Tanpa Delay!
+  // -------------------------------------------------------------
+  if (currentMillis - previousSensorMillis >= sensorInterval) {
+    previousSensorMillis = currentMillis;
+    
+    // Ambil hasil suhu yang sudah siap dari background
+    tempCream = sensorCream.getTempCByIndex(0); 
+    tempOil = sensorOil.getTempCByIndex(0);
+    tempWater = sensorWater.getTempCByIndex(0);
+
+    // Perintahkan sensor untuk mulai membaca suhu untuk siklus berikutnya (Non-blocking)
+    sensorCream.requestTemperatures();
+    sensorOil.requestTemperatures();
+    sensorWater.requestTemperatures();
+
+    tampilkanOLED();
+  }
+
+  // -------------------------------------------------------------
+  // JALUR 2: UPDATE REALTIME & CEK TOMBOL WEB (TIAP 3 DETIK)
+  // -------------------------------------------------------------
+  if (currentMillis - previousRealtimeMillis >= realtimeInterval) {
+    previousRealtimeMillis = currentMillis;
+
+    if (WiFi.status() == WL_CONNECTED) {
+      kirimRealtimeDanCekStatus(); // Eksekusi 2-in-1 (Kirim Realtime sekaligus Cek Status Web)
+    } else {
+      tampilkanErrorWiFi();
+    }
+  }
+
+  // -------------------------------------------------------------
+  // JALUR 3: SIMPAN RIWAYAT (TIAP 60 DETIK, JIKA "REC")
+  // -------------------------------------------------------------
+  if (currentMillis - previousHistoryMillis >= historyInterval) {
+    previousHistoryMillis = currentMillis;
+
+    if (WiFi.status() == WL_CONNECTED && statusRekam == true) {
+      kirimRiwayatKeSupabase();  
+    }
+  }
+}
+
+void tampilkanOLED() {
+  display.clearDisplay(); 
+
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("FERMENTOR VCO"));
+
+  // Status STBY atau REC yang selalu akurat
+  display.setCursor(104, 0);
+  if (statusRekam) {
+    display.print(F("REC"));
+  } else {
+    display.print(F("STBY"));
+  }
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); 
+
+  // KRIM
+  display.setTextSize(1);
+  display.setCursor(0, 19);  
+  display.print(F("KRIM   :"));
+  if (tempCream <= -100) display.setCursor(56, 19), display.print(F("ERR"));
+  else { display.setTextSize(2); display.setCursor(56, 15); display.print(tempCream, 1); display.setTextSize(1); display.setCursor(110, 15); display.print(F("\xF8" "C")); }
+
+  // MINYAK
+  display.setTextSize(1);
+  display.setCursor(0, 37);
+  display.print(F("MINYAK :"));
+  if (tempOil <= -100) display.setCursor(56, 37), display.print(F("ERR"));
+  else { display.setTextSize(2); display.setCursor(56, 33); display.print(tempOil, 1); display.setTextSize(1); display.setCursor(110, 33); display.print(F("\xF8" "C")); }
+
+  // AIR
+  display.setTextSize(1);
+  display.setCursor(0, 55);
+  display.print(F("AIR    :"));
+  if (tempWater <= -100) display.setCursor(56, 55), display.print(F("ERR"));
+  else { display.setTextSize(2); display.setCursor(56, 51); display.print(tempWater, 1); display.setTextSize(1); display.setCursor(110, 51); display.print(F("\xF8" "C")); }
+
+  display.display(); 
+}
+
+void tampilkanErrorWiFi() {
+  display.fillRect(0, 0, 128, 10, SSD1306_BLACK);
+  display.setCursor(0, 0);
+  display.print(F("! WiFi TERPUTUS !"));
+  display.display();
+}
+
+// FUNGSI SUPER (2-in-1): Mengirim suhu ke Web dan Menangkap status Tombol dalam 1 nafas
+void kirimRealtimeDanCekStatus() {
+  HTTPClient http;
+  http.begin(supabase_url_kontrol);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization", "Bearer " + supabase_anon_key);
+  
+  // Meminta Supabase mengembalikan baris data setelah diupdate (Untuk baca status tombol)
+  http.addHeader("Prefer", "return=representation");
+
+  StaticJsonDocument<200> doc;
+  doc["cream_temp"] = tempCream;
+  doc["oil_temp"] = tempOil;
+  doc["water_temp"] = tempWater;
+  doc["uptime"] = millis() / 1000; // Paksa update "detak jantung" agar web tetap Online
+
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+
+  // Titik kedip indikator komunikasi
+  display.fillRect(95, 2, 4, 4, SSD1306_WHITE); 
+  display.display();
+
+  int httpCode = http.PATCH(jsonOutput);
+
+  // Jika koneksi sukses, tangkap balasan Supabase untuk melihat status is_recording dari Web
+  if (httpCode > 0) {
+    String payload = http.getString();
+    StaticJsonDocument<500> respDoc;
+    if (!deserializeJson(respDoc, payload)) {
+      statusRekam = respDoc[0]["is_recording"];
+    }
+  }
+  
+  http.end();
+  
+  // Hapus titik kedip
+  display.fillRect(95, 2, 4, 4, SSD1306_BLACK);
+  display.display();
+}
+
+// Fungsi menyimpan riwayat ke grafik (1 Menit)
+void kirimRiwayatKeSupabase() {
+  HTTPClient http;
+  http.begin(supabase_url_history);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization", "Bearer " + supabase_anon_key);
+  http.addHeader("Prefer", "return=minimal");
+
+  StaticJsonDocument<200> doc;
+  doc["cream_temp"] = tempCream;
+  doc["oil_temp"] = tempOil;
+  doc["water_temp"] = tempWater;
+
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+
+  http.POST(jsonOutput);
+  http.end();
+}

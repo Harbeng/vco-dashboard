@@ -32,12 +32,14 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
   };
 
-  // MENGAMBIL SELURUH DATA TANPA BATAS (UNLIMITED)
+  // MENGAMBIL DATA MENYESUAIKAN MAX ROWS DI SUPABASE (1 JUTA)
   const fetchSensorData = async () => {
     const { data: sensorData } = await supabase
       .from('sensor_readings')
       .select('*')
-      .order('created_at', { ascending: true }); // .limit() dihapus total
+      .order('created_at', { ascending: true })
+      .limit(1000000); // <--- KODE INI DITAMBAHKAN AGAR SINKRON DENGAN SUPABASE
+      
     if (sensorData) setData(sensorData);
   };
 
@@ -53,7 +55,6 @@ export default function App() {
           oil_temp: statusData.oil_temp || 0,
           water_temp: statusData.water_temp || 0
         });
-        // Kita tidak menset lastSeenRef di sini agar tidak terjadi "Online Palsu" saat di-refresh
       }
     };
     fetchStatusAndRealtime();
@@ -61,7 +62,6 @@ export default function App() {
     const historySubscription = supabase
       .channel('sensor_readings_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
-        // DATA BARU DITAMBAHKAN TANPA DIPOTONG (.slice dihapus total)
         setData((currentData) => [...currentData, payload.new]);
       })
       .subscribe();
@@ -87,7 +87,7 @@ export default function App() {
     };
   }, []);
 
-  // MESIN PENGAWAS ONLINE/OFFLINE: Mengecek detak jantung tiap 3 Detik
+  // MESIN PENGAWAS ONLINE/OFFLINE
   useEffect(() => {
     const checkOnlineStatus = () => {
       if (lastSeenRef.current === 0) {
@@ -116,7 +116,6 @@ export default function App() {
     }
   }, [data, filterDate]);
 
-  // AKSI TOMBOL HIJAU/MERAH
   const toggleRecording = async () => {
     const newStatus = !isRecording;
     setIsRecording(newStatus); 
